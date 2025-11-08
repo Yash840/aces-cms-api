@@ -1,6 +1,8 @@
 import Event from '../model/event.js'
 import { generateUniqueId } from "../utils/UniqueIdGenerator.js";
 
+const authorisedTeams = ['team_web', 'team_technical', 'team_event', 'team_leaders']
+
 export const getAllEvents = async (req, res) => {
   try {
     const events = await Event.find();
@@ -92,6 +94,15 @@ export const getEventById = async (req, res) => {
 
 export const createEvent = async (req, res) => {
   try {
+    if(!authorisedTeams.includes(req.member.team)){
+      return res.status(401).json({
+      path: req.url,
+      timestamp: new Date(),
+      success: false,
+      message: "unauthorized request",
+      data: null
+    });
+    }
     const event = new Event(req.body);
     const eventId = generateUniqueId({prefix: "EVENT", alphanumeric: true});
     event.eventId = eventId;
@@ -137,6 +148,15 @@ export const createEvent = async (req, res) => {
 
 export const updateEvent = async (req, res) => {
   try {
+    if(!authorisedTeams.includes(req.member.team)){
+      return res.status(401).json({
+      path: req.url,
+      timestamp: new Date(),
+      success: false,
+      message: "unauthorized request",
+      data: null
+    });
+    }
     const event = await Event.findOne({eventId: req.params.id}).exec();
     const {
       title,
@@ -213,6 +233,15 @@ export const updateEvent = async (req, res) => {
 
 export const deleteEvent = async (req, res) => {
   try {
+    if(!authorisedTeams.includes(req.member.team)){
+      return res.status(401).json({
+      path: req.url,
+      timestamp: new Date(),
+      success: false,
+      message: "unauthorized request",
+      data: null
+    });
+    }
     const deleted = await Event.findOneAndDelete({eventId: req.params.id});
     if (!deleted) {
       return res.status(404).json({
@@ -241,6 +270,7 @@ export const deleteEvent = async (req, res) => {
   }
 };
 
+// Un-implemented method, will implement later
 export const getEventsInPublicFormat = async (req, res) => {
   try {
     const events = await Event.find();

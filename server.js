@@ -6,13 +6,17 @@ import { connectDB } from './config/db.js';
 import fs from 'fs';
 import cors from 'cors'
 import { membersDataSeeder } from './handlers/memberHandler.js';
+import { setup } from './handlers/setup.js';
+import authRouter from './routes/AuthRouter.js';
 
 const app = express();
 
 (async () => {
   try {
     await connectDB();
+    await setup();
 
+    app.use(cookieParser());
     app.use(cors({
       origin: true, // Allow all origins
       credentials: true, // Allow cookies
@@ -21,9 +25,9 @@ const app = express();
     }));
 
     app.use(express.json());
-    app.use(cookieParser());
     app.use("/api/members", memberRouter);
     app.use("/api/events", eventRouter);
+    app.use("/api/auth", authRouter)
 
     const uploadDir = 'uploads/';
     
