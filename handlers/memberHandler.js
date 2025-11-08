@@ -1,9 +1,15 @@
+import mongoose from "mongoose";
 import Member from "../model/member.js";
 import { generateUniqueId } from "../utils/UniqueIdGenerator.js";
+import { dissolveOnboardingIdForMember, getAssociatedMemberId, getOnboardingUrl } from "./onboardingIdManager.js";
+import { sendMail } from "../utils/mailSender.js";
+import { hashPassword, validatePassword } from "../utils/passwordManager.js";
+
+const authorisedTeams = ['team_web', 'team_technical', 'team_leaders', 'team_admin']
 
 export const getAllMembers = async (req, res) => {
   try {
-    const members = await Member.find();
+    const members = await Member.find({isHidden: false}).sort('level');
     return res.status(200).json({
       path: req.url,
       timestamp: new Date(),
@@ -35,7 +41,9 @@ export const getAllMembers = async (req, res) => {
 
 export const getMemberById = async (req, res) => {
   try {
-    const member = await Member.findOne({memberId: req.params.id});
+    const memberId = req.params.id;
+
+    const member = await Member.findOne({memberId, isHidden: false});
     
     if (!member) {
       return res.status(404).json({
@@ -74,8 +82,51 @@ export const getMemberById = async (req, res) => {
   }
 };
 
-export const registerNewMember = async (req, res) => {
+const getLevelForRole = (role) => {
+  if(role === "team_head") return 1;
+  if(role === "member") return 2;
+
+  return 0;
+}
+
+export const getUserProfile = async (email, plainPassword) => {
   try {
+    const member = await Member.findOne({email});
+    let isValidPassword = await validatePassword(member.password, plainPassword);
+
+    let isActive = member.active;
+
+    if(isValidPassword && isActive){
+      return {
+        name: member.name,
+          memberId: member.memberId,
+          img: member.photoURL,
+          email: member.email,
+          team: member.team,
+          role: member.role
+        }
+    }
+
+    return null
+  } catch (error) {
+    throw new Error(error.message)
+  }
+}
+
+export const registerNewMember = async (req, res) => {
+  const session = await mongoose.startSession();
+  try {
+    if(!authorisedTeams.includes(req.member.team)){
+      return res.status(401).json({
+      path: req.url,
+      timestamp: new Date(),
+      success: false,
+      message: "unauthorized request",
+      data: null
+    });
+    }
+
+    session.startTransaction();
     const doesMemberExist = await Member.exists({email: req.body.email});
 
     if(doesMemberExist){
@@ -85,7 +136,17 @@ export const registerNewMember = async (req, res) => {
     const member = new Member(req.body);
     const memberId = generateUniqueId({prefix: "ACES", alphanumeric: false})
     member.memberId = memberId;
-    await member.save();
+    member.level = getLevelForRole(member.role)
+    await member.save({session});
+
+    const onboardingUrl = await getOnboardingUrl(memberId, session)
+    await sendMail({
+      to: member.email,
+      subject: "ACES Onboarding Link",
+      text: onboardingUrl
+    })
+
+    await session.commitTransaction();
 
     const memberData = {
       name: member.name,
@@ -105,6 +166,7 @@ export const registerNewMember = async (req, res) => {
       data: memberData
     });
   } catch (error) {
+    await session.abortTransaction();
     return res.status(400).json({
       path: req.url,
       timestamp: new Date(),
@@ -112,11 +174,104 @@ export const registerNewMember = async (req, res) => {
       message: error.message,
       data: null
     });
+  } finally{
+    await session.endSession();
   }
 };
 
+export const getOnboardingMemberProfile = async (req, res) => {
+  try {
+    const memberId = (await getAssociatedMemberId(req.query.onb)).associatedMemberId;
+    const member = await Member.findOne({memberId, isHidden: false});
+
+    console.log(memberId)
+    console.log(member)
+    
+    if (!member) {
+      return res.status(404).json({
+        path: req.url,
+        timestamp: new Date(),
+        success: false,
+        message: "Member not found",
+        data: null
+      });
+    }
+
+    return res.status(200).json({
+      path: req.url,
+      timestamp: new Date(),
+      success: true,
+      message: "Member fetched successfully",
+      data: {
+          name: member.name,
+          memberId: member.memberId,
+          email: member.email,
+          team: member.team,
+          role: member.role
+        }
+      });
+  } catch (error) {
+    return res.status(500).json({
+      path: req.url,
+      timestamp: new Date(),
+      success: false,
+      message: error.message,
+      data: null
+    });
+  }
+}
+
+export const onboardNewMember = async (req, res) => {
+  const session = await mongoose.startSession()
+  try {
+    session.startTransaction()
+    const {memberId, password} = req.body;
+    const member = await Member.findOne({memberId}).session(session).exec();
+
+    if(member === null){
+      throw new Error("onboardNewMember: member does not exist");
+    }
+
+    member.password = await hashPassword(password);
+    member.active = true;
+
+    await member.save({session});
+    await dissolveOnboardingIdForMember(memberId, session);
+
+    await session.commitTransaction();
+
+    return res.status(200).json({
+      path: req.url,
+      timestamp: new Date(),
+      success: true,
+      message: "Member Onboarded successfully",
+      data: member.email
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    return res.status(400).json({
+      path: req.url,
+      timestamp: new Date(),
+      success: false,
+      message: error.message,
+      data: null
+    });
+  } finally{
+    await session.endSession();
+  }
+}
+
 export const deleteMember = async (req, res) => {
   try {
+    if(!authorisedTeams.includes(req.member.team)){
+      return res.status(401).json({
+      path: req.url,
+      timestamp: new Date(),
+      success: false,
+      message: "unauthorized request",
+      data: null
+    });
+    }
     const deleted = await Member.findByIdAndDelete(req.params.id);
     if (!deleted) {
       return res.status(404).json({
@@ -147,6 +302,16 @@ export const deleteMember = async (req, res) => {
 
 export const updateMember = async (req, res) => {
   try {
+    if(!authorisedTeams.includes(req.member.team)){
+      return res.status(401).json({
+      path: req.url,
+      timestamp: new Date(),
+      success: false,
+      message: "unauthorized request",
+      data: null
+    });
+    }
+
     const member = await Member.findOne({memberId: req.params.id}).exec();
     const {name, linkedin, instagram, photoURL, team, role} = req.body;
 
